@@ -33,21 +33,25 @@ pub fn default_backend_factories() -> StoreFactories {
     // Backends
     factories.add_backend(
         SimpleBackend::name(),
-        Box::new(|_settings, store_path| Ok(Box::new(SimpleBackend::load(store_path)))),
+        Box::new(|_settings, store_path, _workspace_root| {
+            Ok(Box::new(SimpleBackend::load(store_path)))
+        }),
     );
     #[cfg(feature = "git")]
     factories.add_backend(
         crate::git_backend::GitBackend::name(),
-        Box::new(|settings, store_path| {
-            Ok(Box::new(crate::git_backend::GitBackend::load(
-                settings, store_path,
+        Box::new(|settings, store_path, workspace_root| {
+            Ok(Box::new(crate::git_backend::GitBackend::load_at_workspace(
+                settings,
+                store_path,
+                workspace_root,
             )?))
         }),
     );
     #[cfg(feature = "testing")]
     factories.add_backend(
         crate::secret_backend::SecretBackend::name(),
-        Box::new(|settings, store_path| {
+        Box::new(|settings, store_path, _workspace_root| {
             Ok(Box::new(crate::secret_backend::SecretBackend::load(
                 settings, store_path,
             )?))

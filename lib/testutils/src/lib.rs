@@ -203,11 +203,13 @@ impl TestEnvironment {
         let mut factories = default_backend_factories();
         factories.add_backend("test", {
             let factory = self.test_backend_factory.clone();
-            Box::new(move |_settings, store_path| Ok(Box::new(factory.load(store_path))))
+            Box::new(move |_settings, store_path, _workspace_root| {
+                Ok(Box::new(factory.load(store_path)))
+            })
         });
         factories.add_backend(
             SecretBackend::name(),
-            Box::new(|settings, store_path| {
+            Box::new(|settings, store_path, _workspace_root| {
                 Ok(Box::new(SecretBackend::load(settings, store_path)?))
             }),
         );
@@ -219,11 +221,16 @@ impl TestEnvironment {
         settings: &UserSettings,
         repo_path: &Path,
     ) -> Arc<ReadonlyRepo> {
-        RepoLoader::init_from_file_system(settings, repo_path, &self.default_backend_factories())
-            .unwrap()
-            .load_at_head()
-            .block_on()
-            .unwrap()
+        RepoLoader::init_from_file_system(
+            settings,
+            repo_path,
+            &self.default_backend_factories(),
+            None,
+        )
+        .unwrap()
+        .load_at_head()
+        .block_on()
+        .unwrap()
     }
 }
 
