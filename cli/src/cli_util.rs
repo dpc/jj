@@ -563,6 +563,10 @@ impl CommandHelper {
         WorkspaceCommandHelper::new(ui, workspace, repo, env, may_snapshot_working_copy)
     }
 
+    pub fn get_store_factories(&self) -> &StoreFactories {
+        &self.data.store_factories
+    }
+
     pub fn get_working_copy_factory(&self) -> Result<&dyn WorkingCopyFactory, CommandError> {
         let loader = self.workspace_loader()?;
 
