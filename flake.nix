@@ -108,7 +108,7 @@
           env =
             env
             // {
-              RUSTFLAGS = pkgs.lib.optionalString pkgs.stdenv.isLinux "-C link-arg=-fuse-ld=mold";
+              RUSTFLAGS = "";
               NIX_JJ_GIT_HASH = self.rev or "";
             };
 
@@ -175,7 +175,7 @@
         # medium sized rust projects like jj
         rustLinkerFlags =
           if pkgs.stdenv.isLinux
-          then ["-fuse-ld=mold" "-Wl,--compress-debug-sections=zstd"]
+          then [ "-Wl,--compress-debug-sections=zstd"]
           else if pkgs.stdenv.isDarwin
           then
             # on darwin, /usr/bin/ld actually looks at the environment variable
