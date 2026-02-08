@@ -1938,6 +1938,16 @@ impl MutableRepo {
         self.view.set_git_head_target(target);
     }
 
+    /// Returns the per-workspace Git HEAD target for the given workspace.
+    pub fn get_workspace_git_head(&self, name: &WorkspaceName) -> RefTarget {
+        self.view.get_workspace_git_head(name).clone()
+    }
+
+    /// Sets the per-workspace Git HEAD target.
+    pub fn set_workspace_git_head(&mut self, name: &WorkspaceName, target: RefTarget) {
+        self.view.set_workspace_git_head(name, target);
+    }
+
     pub fn set_view(&mut self, data: op_store::View) {
         let head_normalized = false;
         self.view.set_view(data, head_normalized);
@@ -2034,6 +2044,18 @@ impl MutableRepo {
         )
         .await?;
         self.set_git_head_target(new_git_head_target);
+
+        // Merge per-workspace Git HEADs
+        let changed_workspace_git_heads = diff_named_ref_targets(
+            base.workspace_git_heads().iter().map(|(k, v)| (&**k, v)),
+            other.workspace_git_heads().iter().map(|(k, v)| (&**k, v)),
+        );
+        for (name, (base_target, other_target)) in changed_workspace_git_heads {
+            let self_target = self.get_workspace_git_head(name);
+            let new_target =
+                merge_ref_targets(self.index(), &self_target, base_target, other_target).await?;
+            self.set_workspace_git_head(name, new_target);
+        }
 
         Ok(())
     }
