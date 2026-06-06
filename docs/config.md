@@ -715,6 +715,8 @@ log = "builtin_log_compact_full_description"
 [ui]
 # Possible values: "curved" (default), "square", "ascii", "ascii-large"
 graph.style = "square"
+# Number of spaces between the graph and the rendered text. Defaults to 1.
+graph.text-gap = 1
 ```
 
 #### Node style

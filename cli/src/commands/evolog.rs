@@ -38,6 +38,7 @@ use crate::complete;
 use crate::diff_util::DiffFormatArgs;
 use crate::graphlog::GraphStyle;
 use crate::graphlog::get_graphlog;
+use crate::graphlog::text_gap_from_settings;
 use crate::templater::TemplateRenderer;
 use crate::ui::Ui;
 
@@ -118,6 +119,7 @@ pub(crate) async fn cmd_evolog(
 
     let diff_renderer = workspace_command.diff_renderer_for_log(&args.diff_format, args.patch)?;
     let graph_style = GraphStyle::from_settings(workspace_command.settings())?;
+    let graph_text_gap = text_gap_from_settings(workspace_command.settings())?;
     let with_content_format = LogContentFormat::new(ui, workspace_command.settings())?;
 
     let template: TemplateRenderer<CommitEvolutionEntry>;
@@ -151,7 +153,7 @@ pub(crate) async fn cmd_evolog(
     let evolution_entries = walk_predecessors(repo, &start_commit_ids).boxed_local();
     if !args.no_graph {
         let mut raw_output = formatter.raw()?;
-        let mut graph = get_graphlog(graph_style, raw_output.as_mut());
+        let mut graph = get_graphlog(graph_style, graph_text_gap, raw_output.as_mut());
 
         let evolution_nodes = evolution_entries.map_ok(|entry| {
             let ids = entry.predecessor_ids();

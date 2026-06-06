@@ -39,6 +39,7 @@ use crate::diff_util::diff_formats_for_log;
 use crate::formatter::Formatter;
 use crate::graphlog::GraphStyle;
 use crate::graphlog::get_graphlog;
+use crate::graphlog::text_gap_from_settings;
 use crate::operation_templater::OperationTemplateLanguage;
 use crate::templater::TemplateRenderer;
 use crate::ui::Ui;
@@ -135,6 +136,7 @@ async fn do_op_log(
 ) -> Result<(), CommandError> {
     let settings = repo_loader.settings();
     let graph_style = GraphStyle::from_settings(settings)?;
+    let graph_text_gap = text_gap_from_settings(settings)?;
     let with_content_format = LogContentFormat::new(ui, settings)?;
 
     let template: TemplateRenderer<Operation>;
@@ -210,6 +212,7 @@ async fn do_op_log(
                 &repo,
                 &commit_summary_template,
                 (!args.no_graph).then_some(graph_style),
+                graph_text_gap,
                 with_content_format,
                 diff_renderer.as_ref(),
                 op_diff_changes_expr.clone(),
@@ -229,7 +232,7 @@ async fn do_op_log(
 
     if !args.no_graph {
         let mut raw_output = formatter.raw()?;
-        let mut graph = get_graphlog(graph_style, raw_output.as_mut());
+        let mut graph = get_graphlog(graph_style, graph_text_gap, raw_output.as_mut());
         let stream = stream.map_ok(|op| {
             let ids = op.parent_ids();
             let edges = ids.iter().cloned().map(GraphEdge::direct).collect();

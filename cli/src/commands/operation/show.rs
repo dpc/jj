@@ -25,6 +25,7 @@ use crate::diff_util::DiffFormatArgs;
 use crate::diff_util::DiffRenderer;
 use crate::diff_util::diff_formats_for_log;
 use crate::graphlog::GraphStyle;
+use crate::graphlog::text_gap_from_settings;
 use crate::templater::TemplateRenderer;
 use crate::ui::Ui;
 
@@ -105,6 +106,7 @@ pub async fn cmd_op_show(
     };
 
     let graph_style = GraphStyle::from_settings(settings)?;
+    let graph_text_gap = text_gap_from_settings(settings)?;
     let with_content_format = LogContentFormat::new(ui, settings)?;
     let diff_renderer = {
         let formats = diff_formats_for_log(settings, &args.diff_format, args.patch)?;
@@ -152,6 +154,7 @@ pub async fn cmd_op_show(
             &repo,
             &commit_summary_template,
             (!args.no_graph).then_some(graph_style),
+            graph_text_gap,
             &with_content_format,
             diff_renderer.as_ref(),
             op_diff_changes_expr,
