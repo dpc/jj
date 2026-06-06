@@ -62,6 +62,7 @@ use crate::formatter::Formatter;
 use crate::formatter::FormatterExt as _;
 use crate::graphlog::GraphStyle;
 use crate::graphlog::get_graphlog;
+use crate::graphlog::text_gap_from_settings;
 use crate::templater::TemplateRenderer;
 use crate::ui::Ui;
 
@@ -125,6 +126,7 @@ pub async fn cmd_op_diff(
         from_ops = to_op.parents().await?;
     }
     let graph_style = GraphStyle::from_settings(settings)?;
+    let graph_text_gap = text_gap_from_settings(settings)?;
     let with_content_format = LogContentFormat::new(ui, settings)?;
 
     let workspace_name = None;
@@ -192,6 +194,7 @@ pub async fn cmd_op_diff(
         &to_repo,
         &commit_summary_template,
         (!args.no_graph).then_some(graph_style),
+        graph_text_gap,
         &with_content_format,
         diff_renderer.as_ref(),
         op_diff_changes_expr,
@@ -271,6 +274,7 @@ pub async fn show_op_diff(
     to_repo: &Arc<ReadonlyRepo>,
     commit_summary_template: &TemplateRenderer<'_, Commit>,
     graph_style: Option<GraphStyle>,
+    graph_text_gap: usize,
     with_content_format: &LogContentFormat,
     diff_renderer: Option<&DiffRenderer<'_>>,
     op_diff_changes_expr: Arc<UserRevsetExpression>,
@@ -323,7 +327,7 @@ pub async fn show_op_diff(
             .await?;
         if let Some(graph_style) = graph_style {
             let mut raw_output = formatter.raw()?;
-            let mut graph = get_graphlog(graph_style, raw_output.as_mut());
+            let mut graph = get_graphlog(graph_style, graph_text_gap, raw_output.as_mut());
             let mut graph_stream = TopoGroupedGraph::new(revset.stream_graph(), |id| id)
                 .stream()
                 .boxed_local();
