@@ -17,6 +17,8 @@
 use std::cell::RefCell;
 use std::fs;
 use std::io::ErrorKind::NotFound;
+use std::io::ErrorKind::PermissionDenied;
+use std::io::ErrorKind::ReadOnlyFilesystem;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -332,6 +334,27 @@ impl SecureConfig {
             Err(e) if e.source.kind() == NotFound => return Ok(Default::default()),
             Err(e) => return Err(e.into()),
         };
+        match NamedTempFile::new_in(&self.repo_dir) {
+            Ok(_) => {}
+            Err(err) if matches!(err.kind(), PermissionDenied | ReadOnlyFilesystem) => {
+                return Ok(LoadedSecureConfig {
+                    config_file: Some(legacy_config.clone()),
+                    metadata: ConfigMetadata::default(),
+                    warnings: vec![format!(
+                        "Could not migrate repo config at {} because the repository is read-only. \
+                         Using the legacy config.",
+                        legacy_config.display()
+                    )],
+                });
+            }
+            Err(err) => {
+                return Err(PathError {
+                    path: self.repo_dir.clone(),
+                    source: err,
+                }
+                .into());
+            }
+        }
         let metadata = ConfigMetadata {
             path: path_to_bytes(&self.repo_dir).ok().map(|b| b.to_vec()),
         };

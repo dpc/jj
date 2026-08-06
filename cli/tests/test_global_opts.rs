@@ -13,6 +13,12 @@
 // limitations under the License.
 
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use indoc::indoc;
 use itertools::Itertools as _;
@@ -225,6 +231,140 @@ fn test_ignore_working_copy() {
     ◆  0000000000000000000000000000000000000000
     [EOF]
     ");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_log_read_only_repo() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("[git]\ncolocate = true");
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+    let repo_dir = work_dir.root().join(".jj/repo");
+    work_dir.run_jj(["describe", "-m", "first head"]).success();
+    work_dir
+        .run_jj(["describe", "-m", "second head", "--at-op", "@-"])
+        .success();
+    drop(std::fs::remove_file(repo_dir.join("config.toml")));
+    std::fs::write(
+        repo_dir.join("config.toml"),
+        "[ui]\nusername = 'Legacy User'\n",
+    )
+    .unwrap();
+    drop(std::fs::remove_file(repo_dir.join("config-id")));
+    work_dir.write_file("file", "uncommitted\n");
+
+    with_read_only_permissions(&repo_dir, || {
+        let output = work_dir.run_jj(["config", "get", "ui.username"]).success();
+        assert_eq!(output.stdout.raw(), "Legacy User\n");
+        assert!(
+            output
+                .stderr
+                .raw()
+                .contains("Could not migrate repo config"),
+            "expected a config-migration warning, got: {output}"
+        );
+        assert!(
+            !repo_dir.join("config-id").exists(),
+            "read-only migration must not create a config ID"
+        );
+
+        let output = work_dir
+            .run_jj(["log", "-T", "description", "--ignore-working-copy"])
+            .success();
+        assert_eq!(output.stdout.raw(), "@  second head\n◆\n");
+        let stderr = output.stderr.raw();
+        assert!(
+            !stderr.contains("skipped working-copy snapshot and Git import"),
+            "--ignore-working-copy must not warn about synchronization: {output}"
+        );
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("Warning: The repository is read-only"))
+                .collect_vec(),
+            vec![
+                "Warning: The repository is read-only; skipped reconciliation of 2 divergent \
+                 operations and selected the most recent operation by timestamp and ID."
+            ],
+            "--ignore-working-copy must only warn about reconciliation: {output}"
+        );
+
+        let output = work_dir.run_jj(["log", "-T", "description"]).success();
+        assert_eq!(output.stdout.raw(), "@  second head\n◆\n");
+        let stderr = output.stderr.raw();
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("Warning: The repository is read-only"))
+                .collect_vec(),
+            vec![
+                "Warning: The repository is read-only; skipped reconciliation of 2 divergent \
+                 operations and selected the most recent operation by timestamp and ID.",
+                "Warning: The repository is read-only; skipped working-copy snapshot and Git \
+                 import.",
+            ],
+            "expected the read-only warnings, got: {output}"
+        );
+
+        let output = work_dir.run_jj(["new", "-m", "must fail"]);
+        assert!(
+            !output.status.success(),
+            "expected a write error, got: {output}"
+        );
+        assert!(
+            output.stderr.raw().contains("Permission denied"),
+            "expected a repository write error, got: {output}"
+        );
+        assert!(
+            !output.stderr.raw().contains("Don't use --at-op."),
+            "read-only write error must not imply --at-op was used: {output}"
+        );
+    });
+}
+
+#[cfg(unix)]
+fn with_read_only_permissions(path: &Path, f: impl FnOnce()) {
+    let _guard = ReadOnlyPermissions::new(path);
+    f();
+}
+
+#[cfg(unix)]
+struct ReadOnlyPermissions {
+    paths: Vec<(PathBuf, std::fs::Permissions)>,
+}
+
+#[cfg(unix)]
+impl ReadOnlyPermissions {
+    fn new(path: &Path) -> Self {
+        let mut paths = vec![];
+        make_read_only_recursively(path, &mut paths);
+        Self { paths }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ReadOnlyPermissions {
+    fn drop(&mut self) {
+        for (path, permissions) in self.paths.drain(..).rev() {
+            drop(std::fs::set_permissions(path, permissions));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn make_read_only_recursively(path: &Path, paths: &mut Vec<(PathBuf, std::fs::Permissions)>) {
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    let permissions = metadata.permissions();
+    paths.push((path.to_owned(), permissions));
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path).unwrap() {
+            make_read_only_recursively(&entry.unwrap().path(), paths);
+        }
+        std::fs::set_permissions(path, PermissionsExt::from_mode(0o555)).unwrap();
+    } else if !metadata.is_symlink() {
+        std::fs::set_permissions(path, PermissionsExt::from_mode(0o444)).unwrap();
+    }
 }
 
 #[test]
