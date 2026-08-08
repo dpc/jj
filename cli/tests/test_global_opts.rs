@@ -324,6 +324,106 @@ fn test_log_read_only_repo() {
 }
 
 #[cfg(unix)]
+#[test]
+fn test_log_read_only_repo_missing_secure_config() {
+    let (test_env, repo_dir, config_dir) = init_repo_with_missing_secure_config();
+    let work_dir = test_env.work_dir("repo");
+    let config_root = config_dir.parent().unwrap();
+    let config_warning = format!(
+        "Warning: Could not restore repo config at {} because the repository is read-only. \
+         Ignoring the missing repo config.",
+        repo_dir.display()
+    );
+
+    with_read_only_permissions(&repo_dir, || {
+        let output = work_dir.run_jj(["log", "-T", "description"]).success();
+        assert_eq!(output.stdout.raw(), "@\n◆\n");
+        let stderr = output.stderr.raw();
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("Warning:"))
+                .collect_vec(),
+            vec![
+                config_warning.as_str(),
+                "Warning: The repository is read-only; skipped working-copy snapshot and Git \
+                 import.",
+            ],
+            "expected the read-only warnings, got: {output}"
+        );
+        assert!(
+            !config_dir.exists(),
+            "read-only history loading must not recreate the missing secure config"
+        );
+
+        let output = work_dir.run_jj(["config", "set", "--repo", "ui.username", "must fail"]);
+        assert!(
+            !output.status.success(),
+            "expected a repo-config write error, got: {output}"
+        );
+        assert!(
+            output
+                .stderr
+                .raw()
+                .to_ascii_lowercase()
+                .contains("permission denied"),
+            "expected a repository write error, got: {output}"
+        );
+        assert!(
+            std::fs::read_dir(config_root).unwrap().next().is_none(),
+            "a failed repo-config write must not create an unreachable secure config"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn test_log_ignore_working_copy_read_only_repo_missing_secure_config() {
+    let (test_env, repo_dir, config_dir) = init_repo_with_missing_secure_config();
+    let work_dir = test_env.work_dir("repo");
+    let config_warning = format!(
+        "Warning: Could not restore repo config at {} because the repository is read-only. \
+         Ignoring the missing repo config.",
+        repo_dir.display()
+    );
+
+    with_read_only_permissions(&repo_dir, || {
+        let output = work_dir
+            .run_jj(["log", "-T", "description", "--ignore-working-copy"])
+            .success();
+        assert_eq!(output.stdout.raw(), "@\n◆\n");
+        let stderr = output.stderr.raw();
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("Warning:"))
+                .collect_vec(),
+            vec![config_warning.as_str()],
+            "expected only the secure-config warning, got: {output}"
+        );
+        assert!(
+            !config_dir.exists(),
+            "read-only history loading must not recreate the missing secure config"
+        );
+    });
+}
+
+#[cfg(unix)]
+fn init_repo_with_missing_secure_config() -> (TestEnvironment, PathBuf, PathBuf) {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+    let repo_dir = work_dir.root().join(".jj/repo");
+    work_dir
+        .run_jj(["config", "set", "--repo", "ui.username", "Initial User"])
+        .success();
+    let config_id = std::fs::read_to_string(repo_dir.join("config-id")).unwrap();
+    let config_dir = test_env.home_dir().join(".config/jj/repos").join(config_id);
+    std::fs::remove_dir_all(&config_dir).unwrap();
+    (test_env, repo_dir, config_dir)
+}
+
+#[cfg(unix)]
 fn with_read_only_permissions(path: &Path, f: impl FnOnce()) {
     let _guard = ReadOnlyPermissions::new(path);
     f();

@@ -16,6 +16,8 @@
 
 use std::cell::RefCell;
 use std::fs;
+use std::io;
+use std::io::ErrorKind;
 use std::io::ErrorKind::NotFound;
 use std::io::ErrorKind::PermissionDenied;
 use std::io::ErrorKind::ReadOnlyFilesystem;
@@ -62,6 +64,11 @@ pub struct SecureConfig {
     legacy_config_name: &'static str,
     /// A cache of the output \[maybe_\]load_config
     cache: RefCell<Option<(Option<PathBuf>, ConfigMetadata)>>,
+    /// The read-only error that prevented restoration of missing metadata.
+    ///
+    /// If set, [`Self::load_config()`] must fail before writing a replacement
+    /// config directory that cannot be linked from the repo.
+    missing_metadata_read_only_error: RefCell<Option<ErrorKind>>,
 }
 
 /// An error when attempting to load config from disk.
@@ -161,6 +168,7 @@ impl SecureConfig {
             config_id_name,
             legacy_config_name,
             cache: RefCell::new(None),
+            missing_metadata_read_only_error: RefCell::new(None),
         }
     }
 
@@ -334,26 +342,16 @@ impl SecureConfig {
             Err(e) if e.source.kind() == NotFound => return Ok(Default::default()),
             Err(e) => return Err(e.into()),
         };
-        match NamedTempFile::new_in(&self.repo_dir) {
-            Ok(_) => {}
-            Err(err) if matches!(err.kind(), PermissionDenied | ReadOnlyFilesystem) => {
-                return Ok(LoadedSecureConfig {
-                    config_file: Some(legacy_config.clone()),
-                    metadata: ConfigMetadata::default(),
-                    warnings: vec![format!(
-                        "Could not migrate repo config at {} because the repository is read-only. \
-                         Using the legacy config.",
-                        legacy_config.display()
-                    )],
-                });
-            }
-            Err(err) => {
-                return Err(PathError {
-                    path: self.repo_dir.clone(),
-                    source: err,
-                }
-                .into());
-            }
+        if self.repo_read_only_error_kind()?.is_some() {
+            return Ok(LoadedSecureConfig {
+                config_file: Some(legacy_config.clone()),
+                metadata: ConfigMetadata::default(),
+                warnings: vec![format!(
+                    "Could not migrate repo config at {} because the repository is read-only. \
+                     Using the legacy config.",
+                    legacy_config.display()
+                )],
+            });
         }
         let metadata = ConfigMetadata {
             path: path_to_bytes(&self.repo_dir).ok().map(|b| b.to_vec()),
@@ -377,6 +375,22 @@ impl SecureConfig {
         })
     }
 
+    /// Returns the error kind if the repo directory rejects creation of
+    /// temporary files because it is read-only.
+    fn repo_read_only_error_kind(&self) -> Result<Option<ErrorKind>, SecureConfigError> {
+        match NamedTempFile::new_in(&self.repo_dir) {
+            Ok(_) => Ok(None),
+            Err(err) if matches!(err.kind(), PermissionDenied | ReadOnlyFilesystem) => {
+                Ok(Some(err.kind()))
+            }
+            Err(err) => Err(PathError {
+                path: self.repo_dir.clone(),
+                source: err,
+            }
+            .into()),
+        }
+    }
+
     /// Determines the path to the config, and any metadata associated with it.
     /// If no config exists, the path will be None.
     pub fn maybe_load_config(
@@ -391,6 +405,7 @@ impl SecureConfig {
                 warnings: vec![],
             });
         }
+        *self.missing_metadata_read_only_error.borrow_mut() = None;
         let config_id_path = self.repo_dir.join(self.config_id_name);
         let loaded = match fs::read_to_string(&config_id_path).context(&config_id_path) {
             Ok(config_id) => {
@@ -405,12 +420,25 @@ impl SecureConfig {
                         self.handle_metadata_path(rng, root_config_dir, config_dir, metadata)?
                     }
                     Err(SecureConfigError::PathError(e)) if e.source.kind() == NotFound => {
-                        let (path, metadata) =
-                            self.generate_initial_config(root_config_dir, &config_id)?;
-                        LoadedSecureConfig {
-                            config_file: Some(path),
-                            metadata,
-                            warnings: vec![CONFIG_NOT_FOUND.to_string()],
+                        if let Some(error_kind) = self.repo_read_only_error_kind()? {
+                            *self.missing_metadata_read_only_error.borrow_mut() = Some(error_kind);
+                            LoadedSecureConfig {
+                                config_file: None,
+                                metadata: ConfigMetadata::default(),
+                                warnings: vec![format!(
+                                    "Could not restore repo config at {} because the repository is \
+                                     read-only. Ignoring the missing repo config.",
+                                    self.repo_dir.display()
+                                )],
+                            }
+                        } else {
+                            let (path, metadata) =
+                                self.generate_initial_config(root_config_dir, &config_id)?;
+                            LoadedSecureConfig {
+                                config_file: Some(path),
+                                metadata,
+                                warnings: vec![CONFIG_NOT_FOUND.to_string()],
+                            }
                         }
                     }
                     Err(e) => return Err(e),
@@ -434,6 +462,13 @@ impl SecureConfig {
     ) -> Result<LoadedSecureConfig, SecureConfigError> {
         let mut loaded = self.maybe_load_config(rng, root_config_dir)?;
         if loaded.config_file.is_none() {
+            if let Some(error_kind) = *self.missing_metadata_read_only_error.borrow() {
+                return Err(PathError {
+                    path: self.repo_dir.clone(),
+                    source: io::Error::from(error_kind),
+                }
+                .into());
+            }
             let (path, metadata) =
                 self.generate_initial_config(root_config_dir, &generate_config_id(rng))?;
             *self.cache.borrow_mut() = Some((Some(path.clone()), metadata.clone()));
