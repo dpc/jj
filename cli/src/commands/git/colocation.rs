@@ -54,7 +54,11 @@ pub struct GitColocationEnableArgs {}
 /// workspace into the .jj directory. Once this is done you will no longer
 /// be able to use Git commands directly in the Jujutsu workspace.
 #[derive(clap::Args, Clone, Debug)]
-pub struct GitColocationDisableArgs {}
+pub struct GitColocationDisableArgs {
+    /// Disable main-workspace colocation even if Git worktrees will be broken
+    #[arg(long)]
+    force: bool,
+}
 
 /// Manage Jujutsu repository colocation with Git
 #[derive(clap::Subcommand, Clone, Debug)]
@@ -242,7 +246,7 @@ async fn cmd_git_colocation_enable(
 async fn cmd_git_colocation_disable(
     ui: &mut Ui,
     command: &CommandHelper,
-    _args: &GitColocationDisableArgs,
+    args: &GitColocationDisableArgs,
 ) -> Result<(), CommandError> {
     let workspace_command = command.workspace_helper(ui).await?;
     git::get_git_backend(workspace_command.repo().store())?;
@@ -266,6 +270,21 @@ async fn cmd_git_colocation_disable(
         )?;
         drop(workspace_command);
     } else {
+        // Moving the main Git directory invalidates linked worktrees' gitlinks.
+        // Child-workspace colocation can be disabled independently and safely.
+        if !args.force {
+            let git_backend = git::get_git_backend(workspace_command.repo().store())?;
+            let git_repo = git_backend.git_repo();
+            let worktrees = git_repo
+                .worktrees()
+                .map_err(|err| user_error_with_message("Failed to inspect Git worktrees", err))?;
+            if !worktrees.is_empty() {
+                return Err(user_error(
+                    "Cannot disable colocation: secondary Git worktrees exist. Disable their \
+                     colocation or forget them first, or use --force to leave them broken.",
+                ));
+            }
+        }
         let git_store_path = workspace_command.repo_path().join("store").join("git");
         let git_target_path = workspace_command
             .repo_path()
