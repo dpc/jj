@@ -172,6 +172,12 @@
                                 "ascii-large"
                             ],
                             "default": "curved"
+                        },
+                        "text-gap": {
+                            "type": "integer",
+                            "description": "Number of spaces between the graph and the rendered text",
+                            "default": 1,
+                            "minimum": 0
                         }
                     }
                 },

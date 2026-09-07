@@ -22,6 +22,7 @@ use futures::StreamExt as _;
 use futures::TryStreamExt as _;
 use futures::future::ready;
 use futures::future::try_join_all;
+use jj_core::dag_walk_async;
 use jj_core::object_id::HexPrefix;
 use jj_core::object_id::PrefixResolution;
 use jj_core::op_store::OpStore;
@@ -218,6 +219,36 @@ pub async fn get_current_head_ops(
     let mut head_ops = try_join_all(head_ops_futures).await?;
     // To stabilize output, sort in the same order as resolve_op_heads()
     head_ops.sort_by_key(|op| op.metadata().time.end.timestamp);
+    Ok(head_ops)
+}
+
+/// Loads the current operation heads after removing heads that are ancestors of
+/// other heads.
+///
+/// The returned operations are sorted by end timestamp and then operation ID so
+/// callers can select one deterministically without modifying the op-heads
+/// store.
+pub async fn get_current_non_ancestor_head_ops(
+    op_store: &Arc<dyn OpStore>,
+    op_heads_store: &dyn OpHeadsStore,
+) -> Result<Vec<Operation>, OpsetEvaluationError> {
+    let head_ops = get_current_head_ops(op_store, op_heads_store).await?;
+    let mut head_ops = dag_walk_async::heads(
+        head_ops,
+        |op: &Operation| op.id().clone(),
+        async |op: &Operation| op.parents().await,
+    )
+    .await?
+    .into_iter()
+    .collect::<Vec<_>>();
+    head_ops.sort_by(|left, right| {
+        left.metadata()
+            .time
+            .end
+            .timestamp
+            .cmp(&right.metadata().time.end.timestamp)
+            .then_with(|| left.id().cmp(right.id()))
+    });
     Ok(head_ops)
 }
 

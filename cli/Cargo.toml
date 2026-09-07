@@ -92,6 +92,7 @@ mimalloc = { workspace = true }
 once_cell = { workspace = true }
 pest = { workspace = true }
 pollster = { workspace = true }
+prost = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 regex = { workspace = true }

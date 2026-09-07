@@ -19,6 +19,48 @@ use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 use crate::common::TestWorkDir;
 
+#[test]
+fn test_main_colocation_disable_protects_linked_worktrees() {
+    let test_env = TestEnvironment::default();
+    test_env
+        .run_jj_in(".", ["git", "init", "--colocate", "main"])
+        .success();
+    let main = test_env.work_dir("main");
+    let child = test_env.work_dir("child");
+    main.run_jj(["workspace", "add", "--colocate", "../child"])
+        .success();
+
+    let output = main.run_jj(["git", "colocation", "disable"]);
+    assert!(!output.status.success());
+    assert!(
+        output
+            .stderr
+            .normalized()
+            .contains("secondary Git worktrees exist")
+    );
+    assert!(main.root().join(".git").is_dir());
+    child.run_jj(["status"]).success();
+
+    // Disabling a child doesn't move the common Git directory.
+    child.run_jj(["git", "colocation", "disable"]).success();
+    assert!(!child.root().join(".git").exists());
+    main.run_jj(["git", "colocation", "disable"]).success();
+}
+
+#[test]
+fn test_main_colocation_disable_force_override() {
+    let test_env = TestEnvironment::default();
+    test_env
+        .run_jj_in(".", ["git", "init", "--colocate", "main"])
+        .success();
+    let main = test_env.work_dir("main");
+    main.run_jj(["workspace", "add", "--colocate", "../child"])
+        .success();
+    main.run_jj(["git", "colocation", "disable", "--force"])
+        .success();
+    assert!(!main.root().join(".git").exists());
+    assert!(main.root().join(".jj/repo/store/git").is_dir());
+}
 #[must_use]
 fn get_colocation_status(work_dir: &TestWorkDir) -> CommandOutput {
     work_dir.run_jj([

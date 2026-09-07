@@ -1803,7 +1803,11 @@ Convert into a non-colocated Jujutsu/Git repository
 
 This moves the Git repository that is at the root of the Jujutsu workspace into the .jj directory. Once this is done you will no longer be able to use Git commands directly in the Jujutsu workspace.
 
-**Usage:** `jj git colocation disable`
+**Usage:** `jj git colocation disable [OPTIONS]`
+
+###### **Options:**
+
+* `--force` — Disable main-workspace colocation even if Git worktrees will be broken
 
 
 
