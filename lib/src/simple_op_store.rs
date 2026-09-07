@@ -1082,6 +1082,54 @@ mod tests {
     }
 
     #[test]
+    fn test_custom_044_workspace_git_heads_compatibility() {
+        // The 0.44 fork used a protobuf map at field 13. Upstream 0.45 uses
+        // repeated GitHead messages with the same entry field numbers.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct ForkView {
+            #[prost(message, optional, tag = "9")]
+            git_head: Option<crate::protos::simple_op_store::RefTarget>,
+            #[prost(btree_map = "string, message", tag = "13")]
+            workspace_git_heads: BTreeMap<String, crate::protos::simple_op_store::RefTarget>,
+        }
+
+        let default_head = RefTarget::normal(CommitId::from_hex("aaa111"));
+        let linked_head = RefTarget::normal(CommitId::from_hex("bbb222"));
+        let fork_view = ForkView {
+            git_head: ref_target_to_proto(&default_head),
+            workspace_git_heads: btreemap! {
+                "default".to_owned() => ref_target_to_proto(&default_head).unwrap(),
+                "linked".to_owned() => ref_target_to_proto(&linked_head).unwrap(),
+            },
+        };
+        let decode = |fork_view: &ForkView| {
+            let bytes = fork_view.encode_to_vec();
+            let proto = crate::protos::simple_op_store::View::decode(bytes.as_slice()).unwrap();
+            view_from_proto(proto).unwrap()
+        };
+        let expected = btreemap! {
+            WorkspaceName::DEFAULT.to_owned() => default_head.clone(),
+            "linked".into() => linked_head,
+        };
+        let view = decode(&fork_view);
+        assert_eq!(view.git_heads, expected);
+        assert_eq!(
+            view_from_proto(view_to_proto(&view)).unwrap().git_heads,
+            expected
+        );
+
+        // Views written before any per-workspace import keep the legacy HEAD.
+        let legacy_view = ForkView {
+            workspace_git_heads: BTreeMap::new(),
+            ..fork_view
+        };
+        assert_eq!(
+            decode(&legacy_view).git_heads,
+            btreemap! { WorkspaceName::DEFAULT.to_owned() => default_head }
+        );
+    }
+
+    #[test]
     fn test_hash_view() {
         // Test exact output so we detect regressions in compatibility
         assert_snapshot!(

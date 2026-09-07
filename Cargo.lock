@@ -2655,6 +2655,7 @@ dependencies = [
  "pollster",
  "proptest",
  "proptest-state-machine",
+ "prost",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "ratatui",

@@ -153,6 +153,7 @@ use jj_lib::workspace::WorkspaceLoader;
 use jj_lib::workspace::WorkspaceLoaderFactory;
 use jj_lib::workspace::get_working_copy_factory;
 use pollster::FutureExt as _;
+use tempfile::NamedTempFile;
 use tracing::instrument;
 use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
@@ -184,6 +185,12 @@ use crate::diff_util::DiffRenderer;
 use crate::formatter::FormatRecorder;
 use crate::formatter::Formatter;
 use crate::formatter::FormatterExt as _;
+#[cfg(feature = "git")]
+use crate::git_util::load_git_import_options;
+#[cfg(feature = "git")]
+use crate::git_util::print_git_export_stats;
+#[cfg(feature = "git")]
+use crate::git_util::print_git_import_stats_summary;
 use crate::merge_tools::DiffEditor;
 use crate::merge_tools::MergeEditor;
 use crate::merge_tools::MergeToolConfigError;
@@ -481,11 +488,19 @@ impl CommandHelper {
         // operation whose refs should be synchronized with the Git repo. This
         // prevents races with other processes during Git HEAD and refs
         // import/export.
-        let git_import_export_lock = self
-            .is_working_copy_writable()
-            .then(|| env.lock_git_import_export(&workspace))
-            .transpose()?;
-        let mut workspace_command = self.load_from_workspace(ui, workspace, env).await?;
+        let repo_is_read_only = is_read_only_directory(workspace.repo_path())?;
+        let git_import_export_lock = if self.is_working_copy_writable() && !repo_is_read_only {
+            Some(env.lock_git_import_export(&workspace)?)
+        } else {
+            None
+        };
+        let mut workspace_command = self
+            .load_from_workspace(ui, workspace, env, repo_is_read_only)
+            .await?;
+        if repo_is_read_only && self.is_working_copy_writable() {
+            print_read_only_repository_warning(ui)?;
+            return Ok((workspace_command, SnapshotStats::default(), false));
+        }
         let Some(git_import_export_lock) = git_import_export_lock else {
             return Ok((workspace_command, SnapshotStats::default(), false));
         };
@@ -526,7 +541,9 @@ impl CommandHelper {
     ) -> Result<WorkspaceCommandHelper, CommandError> {
         let workspace = self.load_workspace()?;
         let env = self.workspace_environment(ui, &workspace)?;
-        self.load_from_workspace(ui, workspace, env).await
+        let repo_is_read_only = is_read_only_directory(workspace.repo_path())?;
+        self.load_from_workspace(ui, workspace, env, repo_is_read_only)
+            .await
     }
 
     async fn load_from_workspace(
@@ -534,9 +551,13 @@ impl CommandHelper {
         ui: &Ui,
         workspace: Workspace,
         mut env: WorkspaceCommandEnvironment,
+        skip_operation_reconciliation: bool,
     ) -> Result<WorkspaceCommandHelper, CommandError> {
-        let op_head =
-            self.resolve_operation(ui, workspace.repo_loader(), workspace.workspace_name())?;
+        let op_head = if skip_operation_reconciliation {
+            self.resolve_operation_read_only(ui, workspace.repo_loader())?
+        } else {
+            self.resolve_operation(ui, workspace.repo_loader(), workspace.workspace_name())?
+        };
         let repo = workspace.repo_loader().load_at(&op_head).await?;
         if let Err(err) =
             revset_util::try_resolve_trunk_alias(repo.as_ref(), &env.revset_parse_context())
@@ -660,7 +681,8 @@ impl CommandHelper {
                 let stale_wc_commit = repo.store().get_commit_async(wc_commit_id).await?;
 
                 let WorkspaceCommandHelper { workspace, env, .. } = workspace_command;
-                let mut workspace_command = self.load_from_workspace(ui, workspace, env).await?;
+                let mut workspace_command =
+                    self.load_from_workspace(ui, workspace, env, false).await?;
                 let repo = &workspace_command.user_repo.repo;
                 let desired_wc_commit = workspace_command.prepare_working_copy_mutation().await?;
                 let mut locked_ws = workspace_command
@@ -758,7 +780,8 @@ impl CommandHelper {
                      message from read attempt: {e}"
                 )?;
 
-                let mut workspace_command = self.load_from_workspace(ui, workspace, env).await?;
+                let mut workspace_command =
+                    self.load_from_workspace(ui, workspace, env, false).await?;
                 let stats = workspace_command
                     .create_and_check_out_recovery_commit(ui, git_import_export_lock)
                     .await?;
@@ -830,6 +853,34 @@ impl CommandHelper {
             )
             .block_on()
         }
+    }
+
+    fn resolve_operation_read_only(
+        &self,
+        ui: &Ui,
+        repo_loader: &RepoLoader,
+    ) -> Result<Operation, CommandError> {
+        let mut op_heads = op_walk::get_current_non_ancestor_head_ops(
+            repo_loader.op_store(),
+            repo_loader.op_heads_store().as_ref(),
+        )
+        .block_on()?;
+        if let Some(op_str) = &self.data.global_args.at_operation {
+            return Ok(
+                op_walk::resolve_op_at(repo_loader.op_store(), &op_heads, op_str).block_on()?,
+            );
+        }
+        if op_heads.len() > 1 {
+            writeln!(
+                ui.warning_default(),
+                "The repository is read-only; skipped reconciliation of {} divergent operations \
+                 and selected the most recent operation by timestamp and ID.",
+                op_heads.len()
+            )?;
+        }
+        Ok(op_heads
+            .pop()
+            .expect("repository should have at least one operation head"))
     }
 
     /// Creates helper for the repo whose view is supposed to be in sync with
@@ -1230,6 +1281,29 @@ pub struct GitImportExportLock {
     _lock: Option<FileLock>,
 }
 
+fn is_read_only_directory(path: &Path) -> Result<bool, io::Error> {
+    match NamedTempFile::new_in(path) {
+        Ok(_) => Ok(false),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn print_read_only_repository_warning(ui: &Ui) -> Result<(), CommandError> {
+    writeln!(
+        ui.warning_default(),
+        "The repository is read-only; skipped working-copy snapshot and Git import."
+    )?;
+    Ok(())
+}
+
 /// Provides utilities for writing a command that works on a [`Workspace`]
 /// (which most commands do).
 pub struct WorkspaceCommandHelper {
@@ -1278,7 +1352,6 @@ impl WorkspaceCommandHelper {
         let op_summary_template_text = settings.get_string("templates.op_summary")?;
         let may_update_working_copy =
             may_snapshot_working_copy && env.command.should_commit_transaction();
-
         let helper = Self {
             workspace,
             user_repo: ReadonlyUserRepo::new(repo),
@@ -1399,7 +1472,31 @@ impl WorkspaceCommandHelper {
         let mut tx = tx.into_inner();
         let old_git_head = self.repo().view().git_head(&workspace_name).clone();
         let new_git_head = tx.repo().view().git_head(&workspace_name);
+        if &old_git_head == new_git_head {
+            // Importing another worktree's commits must not reset this workspace.
+            self.user_repo = ReadonlyUserRepo::new(
+                self.env
+                    .command
+                    .maybe_commit_transaction(tx, "import git head")
+                    .await?,
+            );
+            return Ok(());
+        }
         if let Some(new_git_head_id) = new_git_head.as_normal() {
+            // A newly colocated workspace may already have the correct parent.
+            // Recording its first Git HEAD must not replace its working copy.
+            if let Some(current_wc_id) = tx.repo().view().get_wc_commit_id(&workspace_name) {
+                let current_wc = tx.repo().store().get_commit_async(current_wc_id).await?;
+                if current_wc.parent_ids().contains(new_git_head_id) {
+                    self.user_repo = ReadonlyUserRepo::new(
+                        self.env
+                            .command
+                            .maybe_commit_transaction(tx, "import git head")
+                            .await?,
+                    );
+                    return Ok(());
+                }
+            }
             let new_git_head_commit = tx.repo().store().get_commit_async(new_git_head_id).await?;
             let wc_commit = tx
                 .repo_mut()
@@ -1467,11 +1564,10 @@ impl WorkspaceCommandHelper {
         use jj_lib::git;
         let git_settings = git::GitSettings::from_settings(self.settings())?;
         let remote_settings = self.settings().remote_settings()?;
-        let import_options =
-            crate::git_util::load_git_import_options(ui, &git_settings, &remote_settings)?;
+        let import_options = load_git_import_options(ui, &git_settings, &remote_settings)?;
         let mut tx = self.start_transaction();
         let stats = git::import_refs(tx.repo_mut(), &import_options).await?;
-        crate::git_util::print_git_import_stats_summary(ui, &stats)?;
+        print_git_import_stats_summary(ui, &stats)?;
         if !tx.repo().has_changes() {
             return Ok(());
         }
@@ -2403,7 +2499,7 @@ to the current parents may contain changes from multiple commits.
                 .await?;
             }
             let stats = jj_lib::git::export_refs(tx.repo_mut())?;
-            crate::git_util::print_git_export_stats(ui, &stats)?;
+            print_git_export_stats(ui, &stats)?;
         }
 
         self.user_repo = ReadonlyUserRepo::new(
@@ -2709,7 +2805,7 @@ pub async fn export_working_copy_changes_to_git(
     let repo = mut_repo.base_repo().as_ref();
     jj_lib::git::update_intent_to_add(repo, workspace_root, old_tree, new_tree).await?;
     let stats = jj_lib::git::export_refs(mut_repo)?;
-    crate::git_util::print_git_export_stats(ui, &stats)?;
+    print_git_export_stats(ui, &stats)?;
     Ok(())
 }
 #[cfg(not(feature = "git"))]

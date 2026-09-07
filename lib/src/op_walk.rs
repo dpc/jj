@@ -225,6 +225,36 @@ pub async fn get_current_head_ops(
     Ok(head_ops)
 }
 
+/// Loads the current operation heads after removing heads that are ancestors of
+/// other heads.
+///
+/// The returned operations are sorted by end timestamp and then operation ID so
+/// callers can select one deterministically without modifying the op-heads
+/// store.
+pub async fn get_current_non_ancestor_head_ops(
+    op_store: &Arc<dyn OpStore>,
+    op_heads_store: &dyn OpHeadsStore,
+) -> Result<Vec<Operation>, OpsetEvaluationError> {
+    let head_ops = get_current_head_ops(op_store, op_heads_store).await?;
+    let mut head_ops = dag_walk_async::heads(
+        head_ops,
+        |op: &Operation| op.id().clone(),
+        async |op: &Operation| op.parents().await,
+    )
+    .await?
+    .into_iter()
+    .collect_vec();
+    head_ops.sort_by(|left, right| {
+        left.metadata()
+            .time
+            .end
+            .timestamp
+            .cmp(&right.metadata().time.end.timestamp)
+            .then_with(|| left.id().cmp(right.id()))
+    });
+    Ok(head_ops)
+}
+
 /// Looks up children of the `root_op_id` by traversing from the `head_ops`.
 ///
 /// This will be slow if the `root_op_id` is far away (or unreachable) from the

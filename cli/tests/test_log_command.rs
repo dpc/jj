@@ -1395,6 +1395,23 @@ fn test_graph_styles() {
     [EOF]
     ");
 
+    // No extra gap between the graph and the rendered text
+    let output = work_dir.run_jj(["log", "-T=description", "--config=ui.graph.text-gap=0"]);
+    insta::assert_snapshot!(output, @"
+    @   merge
+    ├─╮
+    │ ○ side bookmark
+    │ │ with
+    │ │ long
+    │ │ description
+    │ ○ main bookmark 2
+    ├─╯
+    ○ main bookmark 1
+    ○ initial
+    ◆
+    [EOF]
+    ");
+
     // ASCII style
     test_env.add_config(r#"ui.graph.style = "ascii""#);
     let output = work_dir.run_jj(["log", "-T=description"]);
@@ -1844,6 +1861,26 @@ fn test_log_full_description_template() {
     │  <full description>
     │
     ◆  zzzzzzzz root() 00000000
+
+    [EOF]
+    ");
+
+    let output = work_dir.run_jj([
+        "log",
+        "-T",
+        "builtin_log_compact_full_description",
+        "--config=ui.graph.text-gap=0",
+    ]);
+    insta::assert_snapshot!(output, @"
+    @ rlvkpnrz test.user@example.com 2001-02-03 08:05:08 3a70504b
+    │ (empty) (no description set)
+    │
+    ○ qpvuntsm test.user@example.com 2001-02-03 08:05:08 37b69cda
+    │ (empty) this is commit with a multiline description
+    │
+    │ <full description>
+    │
+    ◆ zzzzzzzz root() 00000000
 
     [EOF]
     ");

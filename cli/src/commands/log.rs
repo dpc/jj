@@ -44,6 +44,7 @@ use crate::diff_util::DiffFormatArgs;
 use crate::formatter::FormatterExt as _;
 use crate::graphlog::GraphStyle;
 use crate::graphlog::get_graphlog;
+use crate::graphlog::text_gap_from_settings;
 use crate::templater::TemplateRenderer;
 use crate::ui::Ui;
 
@@ -200,6 +201,7 @@ pub(crate) async fn cmd_log(
     let store = repo.store();
     let diff_renderer = workspace_command.diff_renderer_for_log(&args.diff_format, args.patch)?;
     let graph_style = GraphStyle::from_settings(settings)?;
+    let graph_text_gap = text_gap_from_settings(settings)?;
 
     let use_elided_nodes = settings.get_bool("ui.log-synthetic-elided-nodes")?;
     let with_content_format = LogContentFormat::new(ui, settings)?;
@@ -245,7 +247,7 @@ pub(crate) async fn cmd_log(
 
         if !args.no_graph {
             let mut raw_output = formatter.raw()?;
-            let mut graph = get_graphlog(graph_style, raw_output.as_mut());
+            let mut graph = get_graphlog(graph_style, graph_text_gap, raw_output.as_mut());
             let mut stream: LocalBoxStream<_> = {
                 let mut topo_order = TopoGroupedGraph::new(revset.stream_graph(), |id| id);
 

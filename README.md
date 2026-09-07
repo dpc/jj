@@ -129,7 +129,11 @@ to replace (rare in English). The project is called "Jujutsu" because it matches
 "jj".
 
 Jujutsu is relatively young, with lots of work to still be done. If you have any
-questions, or want to talk about future plans, please join us on Discord
+questions, or want to talk about future plans:
+
+**Preferred:** [Tau Zulip chat](https://tauofunix.zulipchat.com)
+
+You can also join us on Discord
 [![Discord](https://img.shields.io/discord/968932220549103686.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/dkmfj3aGQN),
 start a [GitHub Discussion](https://github.com/jj-vcs/jj/discussions), or
 send an IRC message to [`#jujutsu` on Libera
