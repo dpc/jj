@@ -25,11 +25,11 @@ name need not match its directory name. The compatibility test for the older
 0.44 fork's protobuf HEAD map is also retained.
 
 Upstream adds a workspace-store backend type file during repository loading.
-Open older repositories once with write access before making them read-only:
-for example, run `jj log --ignore-working-copy` with the new binary while the
-repository metadata is writable. A first open of an old, already read-only
-repository can fail with a permission error on `workspace_store/type`. This is
-separate from the fork's read-only history support for upgraded repositories.
+The fork selects the legacy backend when the type file is missing. If access
+restrictions prevent persisting the migration, a missing workspace-store index
+is treated as empty in memory. Existing indexes remain intact, and invalid or
+unreadable metadata does not become empty state. Writable opens still persist
+the migration, so read-only history no longer requires a writable first open.
 
 ## Remaining fork behavior
 

@@ -15,6 +15,7 @@
 //! Contains the implementation of a simple file-based `WorkspaceStore`.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -70,6 +71,8 @@ pub struct SimpleWorkspaceStore {
     store_dir: PathBuf,
     store_file: PathBuf,
     lock_file: PathBuf,
+    /// Whether loading a legacy store could not persist its empty index.
+    unpersisted_legacy_index: bool,
 }
 
 impl SimpleWorkspaceStore {
@@ -84,15 +87,38 @@ impl SimpleWorkspaceStore {
             store_dir,
             store_file,
             lock_file,
+            unpersisted_legacy_index: false,
         }
     }
 
     /// Loads the workspace store from the given store path and repo.
     pub fn load(store_dir: &Path) -> Result<Self, BackendLoadError> {
-        let store = Self::new(store_dir);
-        if !store.store_file.exists() {
+        let mut store = Self::new(store_dir);
+        if !store
+            .store_file
+            .try_exists()
+            .context(&store.store_file)
+            .map_err(BackendLoadError::new)?
+        {
             // TODO: Remove this in jj 0.57+: older repos do not have a workspace store index so we initialize it here.
-            store.initialize().map_err(BackendLoadError::new)?;
+            if let Err(err) = store.initialize() {
+                let io_error = match &err {
+                    SimpleWorkspaceStoreError::Path(err) => Some(&err.source),
+                    SimpleWorkspaceStoreError::Lock(err) => Some(&err.err),
+                    _ => None,
+                };
+                if !io_error.is_some_and(|err| {
+                    matches!(
+                        err.kind(),
+                        ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+                    )
+                }) {
+                    return Err(BackendLoadError::new(err));
+                }
+                // A legacy store has no workspace registrations. Keep that empty
+                // state in memory when we cannot persist the migration.
+                store.unpersisted_legacy_index = true;
+            }
         }
         Ok(store)
     }
@@ -100,14 +126,14 @@ impl SimpleWorkspaceStore {
     /// Initializes this SimpleWorkspaceStore with an empty index.
     pub fn init(store_dir: &Path) -> Result<Self, BackendInitError> {
         let store = Self::new(store_dir);
-        store.initialize()?;
+        store.initialize().map_err(BackendInitError::new)?;
         Ok(store)
     }
 
-    fn initialize(&self) -> Result<(), BackendInitError> {
-        let _lock = self.lock().map_err(BackendInitError::new)?;
-        self.write_store(simple_workspace_store::Workspaces::default())
-            .map_err(BackendInitError::new)?;
+    fn initialize(&self) -> Result<(), SimpleWorkspaceStoreError> {
+        fs::create_dir_all(&self.store_dir).context(&self.store_dir)?;
+        let _lock = self.lock()?;
+        self.write_store(simple_workspace_store::Workspaces::default())?;
         Ok(())
     }
 
@@ -122,7 +148,15 @@ impl SimpleWorkspaceStore {
     }
 
     fn read_store(&self) -> Result<simple_workspace_store::Workspaces, SimpleWorkspaceStoreError> {
-        let workspace_data = fs::read(&self.store_file).context(&self.store_file)?;
+        let workspace_data = match fs::read(&self.store_file) {
+            Ok(data) => data,
+            // Older repos have no index. Loading one on a read-only filesystem
+            // cannot persist the empty index, but can still read its empty state.
+            Err(err) if err.kind() == ErrorKind::NotFound && self.unpersisted_legacy_index => {
+                return Ok(simple_workspace_store::Workspaces::default());
+            }
+            Err(err) => return Err(err).context(&self.store_file).map_err(Into::into),
+        };
 
         let workspaces_proto = simple_workspace_store::Workspaces::decode(&*workspace_data)?;
 

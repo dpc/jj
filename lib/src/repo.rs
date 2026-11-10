@@ -639,8 +639,18 @@ fn read_store_type_compat(
     let read_or_write_default = || match fs::read_to_string(path) {
         Ok(content) => Ok(content),
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            fs::create_dir(path.parent().unwrap()).ok();
-            fs::write(path, default_type)?;
+            let write_default = || {
+                fs::create_dir_all(path.parent().unwrap())?;
+                fs::write(path, default_type)
+            };
+            if let Err(err) = write_default()
+                && !matches!(
+                    err.kind(),
+                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+                )
+            {
+                return Err(err);
+            }
             Ok(default_type.to_owned())
         }
         Err(err) => Err(err),

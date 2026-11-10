@@ -409,6 +409,114 @@ fn test_log_ignore_working_copy_read_only_repo_missing_secure_config() {
 }
 
 #[cfg(unix)]
+#[test]
+fn test_log_read_only_repo_legacy_workspace_store() {
+    for missing in ["type", "index", "files", "directory"] {
+        let test_env = TestEnvironment::default();
+        test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+        let work_dir = test_env.work_dir("repo");
+        work_dir
+            .run_jj(["describe", "-m", "legacy history"])
+            .success();
+        let repo_dir = work_dir.root().join(".jj/repo");
+        let store_dir = repo_dir.join("workspace_store");
+        let original_index = std::fs::read(store_dir.join("index")).unwrap();
+        if missing == "directory" {
+            std::fs::remove_dir_all(&store_dir).unwrap();
+        } else if missing == "files" {
+            std::fs::remove_file(store_dir.join("type")).unwrap();
+            std::fs::remove_file(store_dir.join("index")).unwrap();
+        } else {
+            std::fs::remove_file(store_dir.join(missing)).unwrap();
+        }
+
+        with_read_only_permissions(&repo_dir, || {
+            for ignore_working_copy in [false, true] {
+                let mut args = vec!["log", "--no-graph", "-r", "@", "-T", "description"];
+                if ignore_working_copy {
+                    args.push("--ignore-working-copy");
+                }
+                let output = work_dir.run_jj(args).success();
+                assert_eq!(output.stdout.raw(), "legacy history\n");
+            }
+            // Reading workspace paths must also handle an unmigrated empty index.
+            let output = work_dir
+                .run_jj([
+                    "workspace",
+                    "list",
+                    "--ignore-working-copy",
+                    "-T",
+                    "if(root, 'registered', 'legacy')",
+                ])
+                .success();
+            let expected = if missing == "type" {
+                "registered"
+            } else {
+                "legacy"
+            };
+            assert_eq!(output.stdout.raw(), expected);
+            if missing == "directory" {
+                assert!(!store_dir.exists());
+            } else if missing == "files" {
+                assert!(!store_dir.join("type").exists());
+                assert!(!store_dir.join("index").exists());
+            } else {
+                assert!(!store_dir.join(missing).exists());
+            }
+            if missing == "type" {
+                assert_eq!(
+                    std::fs::read(store_dir.join("index")).unwrap(),
+                    original_index
+                );
+            }
+        });
+
+        // The migration still runs normally once the repository is writable.
+        work_dir.run_jj(["log", "--ignore-working-copy"]).success();
+        assert_eq!(
+            std::fs::read_to_string(store_dir.join("type")).unwrap(),
+            "simple_workspace_store"
+        );
+        assert!(store_dir.join("index").is_file());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_read_only_repo_invalid_workspace_store() {
+    for invalid in ["type", "index"] {
+        let test_env = TestEnvironment::default();
+        test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+        let work_dir = test_env.work_dir("repo");
+        let repo_dir = work_dir.root().join(".jj/repo");
+        let store_dir = repo_dir.join("workspace_store");
+        let content: &[u8] = if invalid == "type" {
+            b"unknown"
+        } else {
+            b"\xff"
+        };
+        std::fs::write(store_dir.join(invalid), content).unwrap();
+        with_read_only_permissions(&repo_dir, || {
+            let output = work_dir.run_jj([
+                "workspace",
+                "root",
+                "--name",
+                "default",
+                "--ignore-working-copy",
+            ]);
+            assert!(!output.status.success(), "{output}");
+            let expected = if invalid == "type" {
+                "Unsupported workspace backend type 'unknown'"
+            } else {
+                "failed to decode Protobuf message"
+            };
+            assert!(output.stderr.raw().contains(expected), "{output}");
+            assert_eq!(std::fs::read(store_dir.join(invalid)).unwrap(), content);
+        });
+    }
+}
+
+#[cfg(unix)]
 fn init_repo_with_missing_secure_config() -> (TestEnvironment, PathBuf, PathBuf) {
     let test_env = TestEnvironment::default();
     test_env.run_jj_in(".", ["git", "init", "repo"]).success();
